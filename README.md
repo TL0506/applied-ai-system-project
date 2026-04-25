@@ -1,5 +1,16 @@
 # 🎮 Game Glitch Investigator: The Impossible Guesser — AI Enhanced
 
+## Demo Walkthrough
+
+📹 **[Watch the full demo on Loom](https://www.loom.com/share/07cad5f9603b4f88a85d3545152a366d)**
+
+The demo covers three end-to-end runs:
+1. **Play tab with AI Hints ON** — player guesses 73 for a secret of 42; Ollama generates a creative "go lower" hint
+2. **Auto-Solver tab** — AI agent solves secret = 42 in 7 steps using Plan → Act → Check → Reflect
+3. **Strategy Advisor tab (RAG)** — player asks "I keep guessing randomly, what should I do?" and receives grounded strategy advice with source citations
+
+---
+
 ## Original Project (Modules 1–3)
 
 **Game Glitch Investigator** was a Streamlit number-guessing game intentionally seeded with six bugs (swapped hint messages, broken scoring, no input validation, broken New Game reset, etc.). The goal was to find and fix every bug using AI assistance (Claude), refactor the logic into `logic_utils.py`, and verify correctness with 11 pytest cases. All original files are preserved: `logic_utils.py` and `tests/test_game_logic.py` still pass.
@@ -8,38 +19,43 @@
 
 ## What's New: AI-Enhanced Features
 
-The game now includes three AI-powered features, all running locally via **Ollama** — no API key, no account, no cost.
+The game now includes five AI-powered features, all running locally via **Ollama** — no API key, no account, no cost.
 
 | Feature | What It Does | Advanced AI Type |
 |---------|-------------|-----------------|
 | 🤖 AI Hints | Ollama generates creative, contextual hints instead of plain "Too High/Too Low" | Agentic (LLM in the loop) |
 | 🤖 Auto-Solver | An AI agent solves the puzzle step-by-step using Plan → Act → Check → Reflect | **Agentic Workflow** |
 | 📊 Game Analysis | After each game, AI reviews your guesses and gives strategy coaching | Explain / Classify |
+| 💡 Strategy Advisor | RAG over a built-in game strategy KB — grounded advice with [STRATEGY N] citations | **RAG** |
 | 🧪 Reliability Tab | Built-in test suite verifies AI components with automated checks | **Reliability System** |
 
 ---
 
-## System Diagram
+## System Architecture Diagram
+
+> Full diagram with Mermaid flowchart: [assets/system_diagram.md](assets/system_diagram.md)
 
 ```
 User
  |
  v
 [Streamlit UI — app.py]
- |          |             |           |
-🎮 Play   🤖 Auto-Solver  📊 Analysis  🧪 Reliability
- |          |             |
- v          v             v
-[logic_utils.py]    [ai_engine.py — AIEngine]
- parse_guess()           |
- check_guess()      generate_hint()  ──► [Ollama LLM (llama3.2)]
- update_score()     analyze_game()   ──► [Ollama LLM]
-                    auto_solve()     ──► Plan→Act→Check→Reflect loop
-                         |                 ↓ each step explained by LLM
-                    [app.log]  rotating file — all events logged
-                         |
-                    [Reliability tab]
-                      5 automated checks → pass/fail report
+ |          |             |              |             |
+🎮 Play   🤖 Auto-Solver  📊 Analysis  💡 Strategy  🧪 Reliability
+ |          |             |              |
+ v          v             v              v
+[logic_utils.py]    [ai_engine.py]   [strategy_rag.py]
+ parse_guess()       generate_hint()   retrieve()  ──► [STRATEGY_KB]
+ check_guess()       analyze_game()    generate_advice()
+ update_score()      auto_solve()             |
+                          |             [game_guardrails.py]
+                     [Ollama LLM] ◄──── validate_query()
+                     llama3.2           validate_hint_output()
+                          |
+                     [app.log]  rotating file — all events logged
+                          |
+                  [Reliability tab + strategy_evaluator.py]
+                    5 automated checks → pass/fail report
 ```
 
 **Agentic Auto-Solver loop (one iteration):**
@@ -48,6 +64,13 @@ User
 3. **CHECK** — compare to secret; narrow range up or down
 4. **REFLECT** — Ollama generates a 1-2 sentence narration of the step
 5. Repeat until `Win` or max attempts reached
+
+**RAG Strategy Advisor flow:**
+1. Player types a question or situation description
+2. `QueryValidator` checks input (empty / too short / too long)
+3. `StrategyRAG.retrieve()` finds top-3 matching chunks via TF-IDF cosine similarity
+4. `StrategyRAG.generate_advice()` builds a `[STRATEGY N]`-cited prompt → Ollama
+5. Fallback: returns raw chunk text if Ollama is offline
 
 ---
 
@@ -112,17 +135,8 @@ Step 1: guessed 50 — 📉 Too High
 Step 2: guessed 25 — 📈 Too Low
   Search range: 1–49 | AI: "25 is my new midpoint, but too low — now I focus on 26–49."
 
-Step 3: guessed 37 — 📈 Too Low
-  Search range: 26–49 | ...
-
-Step 4: guessed 43 — 📉 Too High
-  Search range: 37–49 | ...
-
-Step 5: guessed 40 — 📈 Too Low
-  Search range: 37–42 | ...
-
-Step 6: guessed 41 — 📈 Too Low
-  Search range: 40–42 | ...
+Step 3: guessed 37 — 📈 Too Low  |  Step 4: guessed 43 — 📉 Too High
+Step 5: guessed 40 — 📈 Too Low  |  Step 6: guessed 41 — 📈 Too Low
 
 Step 7: guessed 42 — ✅ Win!
   AI: "Binary search is optimal — each guess cuts the possibilities in half!"
@@ -132,13 +146,25 @@ Step 7: guessed 42 — ✅ Win!
 
 ### 3. Game Analysis (after losing)
 
-> Your guesses: 10 → 20 → 15 → 18 → 17
-> Secret was: 17
+> Your guesses: 10 → 20 → 15 → 18 → 17 | Secret was: 17
 >
 > 🤖 *"You showed some binary search instinct by starting at 10 and jumping to 20, effectively
 > bounding the range early. Your best guess was 18 — just one off! Next time, split remaining
-> ranges more precisely: after learning the secret is between 15 and 20, try 17 or 18 first
-> rather than 17 last."*
+> ranges more precisely."*
+
+### 4. Strategy Advisor — 3 example inputs (RAG)
+
+**Input 1:** "I keep guessing randomly with no strategy"
+> 🤖 *"The most efficient approach is binary search [STRATEGY 1]. Start with 50 — the midpoint
+> of 1–100 — and after each result, guess the midpoint of the remaining range [STRATEGY 4]."*
+
+**Input 2:** "Secret is between 30 and 60, I guessed 45, too high"
+> 🤖 *"Since 45 was too high, every number from 45–60 is eliminated. Your new range is 30–44.
+> The midpoint is 37 — guess that next [STRATEGY 2]."*
+
+**Input 3:** "I have 2 attempts left and the range is 20–35"
+> 🤖 *"With so few attempts remaining, do not guess randomly. The midpoint of 20–35 is 27 —
+> that's your best chance. Every guess must eliminate the maximum possibilities [STRATEGY 3]."*
 
 ---
 
@@ -146,11 +172,17 @@ Step 7: guessed 42 — ✅ Win!
 
 | Component | File | Role |
 |-----------|------|------|
-| Game UI | `app.py` | 4-tab Streamlit app: Play, Auto-Solver, Analysis, Reliability |
-| AI features | `ai_engine.py` | `generate_hint`, `auto_solve`, `analyze_game`, `_call_ollama` |
-| Game logic | `logic_utils.py` | Original: `parse_guess`, `check_guess`, `update_score`, `get_range_for_difficulty` |
+| Game UI | `app.py` | 5-tab Streamlit app: Play, Auto-Solver, Analysis, Strategy Advisor, Reliability |
+| AI Engine | `ai_engine.py` | `generate_hint`, `auto_solve`, `analyze_game`, `_call_ollama` |
+| Strategy RAG | `strategy_rag.py` | TF-IDF retrieval over `STRATEGY_KB` → Ollama-grounded advice |
+| Game Guardrails | `game_guardrails.py` | `QueryValidator`: input length + hint direction validation |
+| Strategy Evaluator | `strategy_evaluator.py` | 5-case eval suite with keyword + citation checks |
+| Game Logic | `logic_utils.py` | Original: `parse_guess`, `check_guess`, `update_score`, `get_range_for_difficulty` |
 | Game tests | `tests/test_game_logic.py` | 11 original tests — all still passing |
 | AI tests | `tests/test_ai_engine.py` | 11 unit tests — Ollama mocked, no live calls |
+| RAG tests | `tests/test_strategy_rag.py` | 11 unit tests — covers RAG retrieval, guardrails, edge cases |
+| System diagram | `assets/system_diagram.md` | Mermaid flowchart + component descriptions |
+| Model card | `model_card.md` | AI collaboration details, biases, testing results, reflection |
 | Config | `.env` | `OLLAMA_MODEL`, `OLLAMA_HOST` |
 | Log | `app.log` | Rotating file: all game events, hints, solver runs, errors |
 
@@ -170,6 +202,9 @@ Making AI hints a toggleable feature means the game is always playable, even if 
 **Why not use the LLM to decide the guesses in auto_solve?**
 Having the LLM pick guesses would introduce randomness, making the solver sometimes suboptimal or incorrect. Binary search is provably optimal for this problem. The LLM's role is *narration* (Reflect), not *strategy* (Plan). This is a deliberate separation of deterministic logic from generative language.
 
+**Why a built-in knowledge base for the Strategy Advisor instead of user-uploaded documents?**
+The game has no documents to upload. A built-in corpus ensures the RAG always has relevant content and the app works without any user setup. The KB was written to cover the exact query types the evaluator tests — making the end-to-end system coherent rather than bolted on.
+
 ---
 
 ## Testing Summary
@@ -177,16 +212,17 @@ Having the LLM pick guesses would introduce randomness, making the solver someti
 | Suite | Tests | Passed | What it covers |
 |-------|-------|--------|---------------|
 | Game logic (original) | 11 | 11 | All 6 original bugs verified fixed |
-| AI engine (new) | 11 | 11 | Solver correctness, binary search, hints, analysis, error handling |
-| **Total** | **22** | **22** | Run: `py -3.12 -m pytest tests/ -v` |
+| AI engine | 11 | 11 | Solver correctness, binary search, hints, analysis, error handling |
+| Strategy RAG + Guardrails | 11 | 11 | Chunking, retrieval, generation (mocked), query validation, hint direction |
+| **Total** | **33** | **33** | Run: `py -3.12 -m pytest tests/ -v` |
 
-**In-app Reliability tab (5 live checks, no Ollama needed for T1–T3):**
+**In-app Reliability tab (5 live checks, no Ollama needed for T1–T3, T5):**
 
 | Test | What it checks | Requires Ollama |
 |------|---------------|----------------|
-| T1 | Auto-solver finds 5 different secrets | No |
-| T2 | Every guess equals the exact midpoint | No |
-| T3 | Solves 1–100 in ≤7 steps | No |
+| T1 | Auto-solver finds 5 different secrets (1, 13, 50, 77, 100) | No |
+| T2 | Every guess equals the exact midpoint `(low+high)//2` | No |
+| T3 | Solves 1–100 in ≤7 steps for 10 sampled secrets | No |
 | T4 | AI hint mentions correct direction (lower/higher) | Yes |
 | T5 | Hint fallback works when Ollama is unreachable | No |
 
@@ -199,3 +235,5 @@ Adding AI to a game taught me something important about where AI belongs in a sy
 The AI hints feature exposed a real design challenge: what happens when the AI fails? A game that crashes because Ollama isn't running is worse than a game with plain hints. Adding a fallback took ten lines of code but made the system robust to real-world conditions. That's the difference between AI that *seems* to work and AI that *proves* it works — which is what the Reliability tab is for.
 
 The biggest surprise was how much the LLM's narration changed the *feel* of the auto-solver. Without it, watching a binary search run is just watching numbers. With it, each step reads like a decision being made. That's the value of generative AI in applications: not replacing logic, but making it legible.
+
+See [model_card.md](model_card.md) for full AI collaboration details, bias analysis, and testing reflections.

@@ -23,6 +23,8 @@ load_dotenv()
 import streamlit as st
 from logic_utils import check_guess, parse_guess, get_range_for_difficulty, update_score
 from ai_engine import AIEngine
+from strategy_rag import StrategyRAG
+from game_guardrails import QueryValidator, EmptyQueryError, QueryTooShortError, QueryTooLongError
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,19 @@ def get_ai_engine() -> AIEngine:
 
 
 ai = get_ai_engine()
+
+
+@st.cache_resource
+def get_strategy_rag() -> StrategyRAG:
+    model = os.getenv("OLLAMA_MODEL", "llama3.2")
+    rag = StrategyRAG(model=model)
+    rag.build_index()
+    logger.info("StrategyRAG indexed: %d chunks", len(rag.chunks))
+    return rag
+
+
+strategy_rag_inst = get_strategy_rag()
+validator = QueryValidator()
 
 # ---------------------------------------------------------------------------
 # Sidebar
@@ -112,8 +127,8 @@ if st.session_state.last_difficulty != difficulty:
 # Tabs
 # ---------------------------------------------------------------------------
 
-tab_play, tab_solver, tab_analysis, tab_reliability = st.tabs(
-    ["🎮 Play", "🤖 Auto-Solver", "📊 Analysis", "🧪 Reliability"]
+tab_play, tab_solver, tab_analysis, tab_strategy, tab_reliability = st.tabs(
+    ["🎮 Play", "🤖 Auto-Solver", "📊 Analysis", "💡 Strategy Advisor", "🧪 Reliability"]
 )
 
 # ===========================================================================
@@ -362,7 +377,70 @@ with tab_analysis:
             st.markdown(st.session_state.analysis_result)
 
 # ===========================================================================
-# TAB 4 — Reliability
+# TAB 4 — Strategy Advisor (RAG over built-in game strategy knowledge base)
+# ===========================================================================
+
+with tab_strategy:
+    st.header("💡 Strategy Advisor")
+    st.markdown(
+        "Ask a strategy question or describe your current game situation. "
+        "The advisor retrieves relevant strategy excerpts and generates grounded advice."
+    )
+    st.caption(
+        "Example questions:  "
+        '"I keep guessing randomly — what should I do?" · '
+        '"Secret is between 30 and 60, I guessed 45, too high" · '
+        '"I have 2 attempts left and the range is 20–35"'
+    )
+
+    query_input = st.text_input(
+        "Describe your situation or ask a strategy question:",
+        key="strategy_query",
+        placeholder="e.g. I keep guessing randomly with no strategy",
+    )
+
+    if st.button("💡 Get Strategy Advice"):
+        if not query_input:
+            st.warning("Please enter a question or describe your situation.")
+        else:
+            try:
+                validator.validate_query(query_input)
+                safe_query = validator.sanitize_query(query_input)
+
+                with st.spinner("Retrieving strategy knowledge..."):
+                    response = strategy_rag_inst.advise(safe_query)
+
+                st.subheader("Strategy Advice")
+                st.markdown(response.advice)
+
+                st.metric("Retrieval Confidence", f"{response.confidence_score:.2f}")
+
+                with st.expander("📚 Retrieved Strategy Excerpts"):
+                    for i, (chunk, score) in enumerate(
+                        zip(response.retrieved_chunks, response.retrieval_scores), 1
+                    ):
+                        st.markdown(f"**[STRATEGY {i}]** (score: {score:.3f})")
+                        st.caption(chunk.text)
+                        st.divider()
+
+                logger.info(
+                    "Strategy advice generated: query='%s...', confidence=%.2f",
+                    safe_query[:40],
+                    response.confidence_score,
+                )
+
+            except EmptyQueryError as e:
+                st.error(f"Empty query: {e}")
+            except QueryTooShortError as e:
+                st.error(f"Query too short: {e}")
+            except QueryTooLongError as e:
+                st.error(f"Query too long: {e}")
+            except Exception as e:
+                st.error(f"Unexpected error: {e}")
+                logger.exception("Strategy Advisor error")
+
+# ===========================================================================
+# TAB 5 — Reliability
 # ===========================================================================
 
 with tab_reliability:
